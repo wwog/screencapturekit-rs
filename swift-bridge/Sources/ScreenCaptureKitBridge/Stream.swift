@@ -1,6 +1,7 @@
 // Stream Control APIs - SCContentFilter, SCStream
 
 import CoreGraphics
+import CoreImage
 import CoreMedia
 import Foundation
 import ScreenCaptureKit
@@ -369,6 +370,54 @@ private class HandlerRegistry {
 
 private let handlerRegistry = HandlerRegistry()
 
+// MARK: - Single-frame capture helper (macOS 12.3+)
+
+private class SingleFrameHandler: NSObject, SCStreamOutput {
+    private var continuation: CheckedContinuation<CGImage, Error>?
+    private let lock = NSLock()
+    private let ciContext = CIContext(options: nil)
+
+    func nextImage() async throws -> CGImage {
+        try await withCheckedThrowingContinuation { cont in
+            lock.lock()
+            continuation = cont
+            lock.unlock()
+        }
+    }
+
+    func stream(_: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .screen else { return }
+        guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let rect = CGRect(x: 0, y: 0, width: width, height: height)
+
+        guard let cgImage = ciContext.createCGImage(CIImage(cvPixelBuffer: pixelBuffer), from: rect) else {
+            resumeOnce(with: SCBridgeError.screenshotError("Failed to create CGImage from sample buffer"))
+            return
+        }
+
+        resumeOnce(with: cgImage)
+    }
+
+    private func resumeOnce(with image: CGImage) {
+        lock.lock()
+        let cont = continuation
+        continuation = nil
+        lock.unlock()
+        cont?.resume(returning: image)
+    }
+
+    private func resumeOnce(with error: Error) {
+        lock.lock()
+        let cont = continuation
+        continuation = nil
+        lock.unlock()
+        cont?.resume(throwing: error)
+    }
+}
+
 // MARK: - Stream: SCStream Control
 
 @_cdecl("sc_stream_create")
@@ -547,6 +596,37 @@ public func stopStreamCapture(
         } catch {
             let bridgeError = SCBridgeError.streamError(error.localizedDescription)
             bridgeError.description.withCString { callback(context, false, $0) }
+        }
+    }
+}
+
+// MARK: - Single-frame CGImage capture via SCStream (macOS 12.3+)
+
+@_cdecl("sc_stream_capture_image")
+public func scStreamCaptureImage(
+    _ filterPtr: OpaquePointer,
+    _ configPtr: OpaquePointer,
+    _ callback: @escaping @convention(c) (OpaquePointer?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void,
+    _ userData: UnsafeMutableRawPointer?
+) {
+    let filter: SCContentFilter = unretained(filterPtr)
+    let config: SCStreamConfiguration = unretained(configPtr)
+
+    Task {
+        do {
+            let stream = SCStream(filter: filter, configuration: config, delegate: nil)
+            let handler = SingleFrameHandler()
+            let queue = DispatchQueue(label: "com.screencapturekit.singleframe", qos: .userInitiated)
+            try stream.addStreamOutput(handler, type: .screen, sampleHandlerQueue: queue)
+
+            try await stream.startCapture()
+            let image = try await handler.nextImage()
+            try await stream.stopCapture()
+
+            callback(retain(image), nil, userData)
+        } catch {
+            let message = error.localizedDescription
+            message.withCString { callback(nil, $0, userData) }
         }
     }
 }

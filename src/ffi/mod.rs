@@ -490,6 +490,12 @@ extern "C" {
         context: *mut c_void,
         callback: extern "C" fn(*mut c_void, bool, *const i8),
     );
+    pub fn sc_stream_capture_image(
+        content_filter: *const c_void,
+        config: *const c_void,
+        callback: extern "C" fn(*const c_void, *const i8, *mut c_void),
+        user_data: *mut c_void,
+    );
     pub fn sc_stream_update_configuration(
         stream: *const c_void,
         config: *const c_void,

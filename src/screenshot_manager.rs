@@ -113,6 +113,27 @@ extern "C" fn buffer_callback(
     }
 }
 
+/// 基于 SCStream 的单帧抓取（macOS 12.3+），返回 `CGImage`
+///
+/// 当系统低于 macOS 14 时，可用此函数替代 `SCScreenshotManager`。
+pub fn capture_image_with_stream(
+    content_filter: &SCContentFilter,
+    configuration: &SCStreamConfiguration,
+) -> Result<CGImage, SCError> {
+    let (completion, context) = SyncCompletion::<CGImage>::new();
+
+    unsafe {
+        crate::ffi::sc_stream_capture_image(
+            content_filter.as_ptr(),
+            configuration.as_ptr(),
+            image_callback,
+            context,
+        );
+    }
+
+    completion.wait().map_err(SCError::internal_error)
+}
+
 #[cfg(feature = "macos_26_0")]
 extern "C" fn screenshot_output_callback(
     output_ptr: *const c_void,
