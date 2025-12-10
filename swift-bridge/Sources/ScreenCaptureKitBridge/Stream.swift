@@ -619,9 +619,15 @@ public func scStreamCaptureImage(
             let queue = DispatchQueue(label: "com.screencapturekit.singleframe", qos: .userInitiated)
             try stream.addStreamOutput(handler, type: .screen, sampleHandlerQueue: queue)
 
+            defer {
+                Task {
+                    try? await stream.stopCapture()
+                }
+                try? stream.removeStreamOutput(handler, type: .screen)
+            }
+
             try await stream.startCapture()
             let image = try await handler.nextImage()
-            try await stream.stopCapture()
 
             callback(retain(image), nil, userData)
         } catch {
