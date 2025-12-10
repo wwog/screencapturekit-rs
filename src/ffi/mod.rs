@@ -659,6 +659,28 @@ extern "C" {
     pub fn sc_recording_output_release(output: *const c_void);
 }
 
+// MARK: - CoreGraphics Display helpers
+extern "C" {
+    pub fn cg_get_active_display_list(out_ptr: *mut *mut u32, out_count: *mut usize) -> bool;
+    pub fn cg_active_display_list_free(ptr: *mut u32, count: usize);
+    pub fn cg_display_copy_current_mode(
+        display_id: u32,
+        out_width: *mut i32,
+        out_height: *mut i32,
+        out_pixel_width: *mut i32,
+        out_pixel_height: *mut i32,
+        out_refresh_rate: *mut f64,
+    ) -> bool;
+    pub fn cg_display_create_image(display_id: u32) -> *const c_void;
+    pub fn cg_display_create_image_rect(
+        display_id: u32,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> *const c_void;
+}
+
 // MARK: - SCScreenshotManager (macOS 14.0+)
 extern "C" {
     pub fn sc_screenshot_manager_capture_image(

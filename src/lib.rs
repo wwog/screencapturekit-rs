@@ -329,6 +329,7 @@
 
 pub mod audio_devices;
 pub mod cg;
+pub mod cg_display;
 pub mod cm;
 #[cfg(feature = "macos_14_0")]
 pub mod content_sharing_picker;
@@ -362,6 +363,7 @@ pub use utils::four_char_code::FourCharCode;
 pub mod prelude {
     pub use crate::audio_devices::AudioInputDevice;
     pub use crate::cg::{CGPoint, CGRect, CGSize};
+    pub use crate::cg_display::{CGDisplay, DisplayMode};
     pub use crate::cm::{CMSampleBuffer, CMTime};
     pub use crate::dispatch_queue::{DispatchQoS, DispatchQueue};
     pub use crate::error::{SCError, SCResult};
