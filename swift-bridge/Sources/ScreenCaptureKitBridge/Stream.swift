@@ -3,6 +3,7 @@
 import CoreGraphics
 import CoreImage
 import CoreMedia
+import CoreVideo
 import Foundation
 import ScreenCaptureKit
 
@@ -418,6 +419,43 @@ private class SingleFrameHandler: NSObject, SCStreamOutput {
     }
 }
 
+private class SingleFrameSampleBufferHandler: NSObject, SCStreamOutput {
+    private var continuation: CheckedContinuation<CMSampleBuffer, Error>?
+    private let lock = NSLock()
+
+    func nextSampleBuffer() async throws -> CMSampleBuffer {
+        try await withCheckedThrowingContinuation { cont in
+            lock.lock()
+            continuation = cont
+            lock.unlock()
+        }
+    }
+
+    func stream(_: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .screen else { return }
+
+        // Retain the sample buffer for Rust side
+        // Rust will release it when CMSampleBuffer is dropped
+        resumeOnce(with: sampleBuffer)
+    }
+
+    private func resumeOnce(with sampleBuffer: CMSampleBuffer) {
+        lock.lock()
+        let cont = continuation
+        continuation = nil
+        lock.unlock()
+        cont?.resume(returning: sampleBuffer)
+    }
+
+    private func resumeOnce(with error: Error) {
+        lock.lock()
+        let cont = continuation
+        continuation = nil
+        lock.unlock()
+        cont?.resume(throwing: error)
+    }
+}
+
 // MARK: - Stream: SCStream Control
 
 @_cdecl("sc_stream_create")
@@ -630,6 +668,47 @@ public func scStreamCaptureImage(
             let image = try await handler.nextImage()
 
             callback(retain(image), nil, userData)
+        } catch {
+            let message = error.localizedDescription
+            message.withCString { callback(nil, $0, userData) }
+        }
+    }
+}
+
+// MARK: - Single-frame CMSampleBuffer capture via SCStream (macOS 12.3+)
+
+@_cdecl("sc_stream_capture_sample_buffer")
+public func scStreamCaptureSampleBuffer(
+    _ filterPtr: OpaquePointer,
+    _ configPtr: OpaquePointer,
+    _ callback: @escaping @convention(c) (OpaquePointer?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void,
+    _ userData: UnsafeMutableRawPointer?
+) {
+    let filter: SCContentFilter = unretained(filterPtr)
+    let config: SCStreamConfiguration = unretained(configPtr)
+
+    Task {
+        do {
+            let stream = SCStream(filter: filter, configuration: config, delegate: nil)
+            let handler = SingleFrameSampleBufferHandler()
+            let queue = DispatchQueue(label: "com.screencapturekit.singleframe.samplebuffer", qos: .userInitiated)
+            try stream.addStreamOutput(handler, type: .screen, sampleHandlerQueue: queue)
+
+            defer {
+                Task {
+                    try? await stream.stopCapture()
+                }
+                try? stream.removeStreamOutput(handler, type: .screen)
+            }
+
+            try await stream.startCapture()
+            let sampleBuffer = try await handler.nextSampleBuffer()
+
+            // Retain the sample buffer for Rust side
+            // Rust will release it when CMSampleBuffer is dropped
+            // IMPORTANT: passRetained() is used here to retain the CMSampleBuffer for Rust
+            // The Rust side will release it when CMSampleBuffer is dropped
+            callback(OpaquePointer(Unmanaged.passRetained(sampleBuffer as AnyObject).toOpaque()), nil, userData)
         } catch {
             let message = error.localizedDescription
             message.withCString { callback(nil, $0, userData) }

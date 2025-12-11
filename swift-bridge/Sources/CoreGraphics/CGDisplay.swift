@@ -38,6 +38,8 @@ public func cgActiveDisplayListFree(_ ptr: UnsafeMutablePointer<UInt32>?, _ coun
 }
 
 /// 获取显示器当前模式（逻辑分辨率 & 像素分辨率 & 刷新率）
+/// 
+/// 注意：在 Swift 中，CGDisplayCopyDisplayMode 返回的对象由 ARC 自动管理
 @_cdecl("cg_display_copy_current_mode")
 public func cgDisplayCopyCurrentMode(
     _ displayID: UInt32,
@@ -50,7 +52,8 @@ public func cgDisplayCopyCurrentMode(
     guard let mode = CGDisplayCopyDisplayMode(displayID) else {
         return false
     }
-
+    
+    // 读取属性
     outWidth.pointee = Int32(mode.width)
     outHeight.pointee = Int32(mode.height)
     outPixelWidth.pointee = Int32(mode.pixelWidth)

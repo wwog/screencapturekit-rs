@@ -113,6 +113,27 @@ extern "C" fn buffer_callback(
     }
 }
 
+extern "C" fn sample_buffer_callback(
+    sample_buffer_ptr: *const c_void,
+    error_ptr: *const i8,
+    user_data: *mut c_void,
+) {
+    if !error_ptr.is_null() {
+        let error = unsafe { error_from_cstr(error_ptr) };
+        unsafe { SyncCompletion::<crate::cm::CMSampleBuffer>::complete_err(user_data, error) };
+    } else if !sample_buffer_ptr.is_null() {
+        let sample_buffer = unsafe { crate::cm::CMSampleBuffer::from_ptr(sample_buffer_ptr.cast_mut()) };
+        unsafe { SyncCompletion::complete_ok(user_data, sample_buffer) };
+    } else {
+        unsafe {
+            SyncCompletion::<crate::cm::CMSampleBuffer>::complete_err(
+                user_data,
+                "Unknown error".to_string(),
+            );
+        };
+    }
+}
+
 /// 基于 SCStream 的单帧抓取（macOS 12.3+），返回 `CGImage`
 ///
 /// 当系统低于 macOS 14 时，可用此函数替代 `SCScreenshotManager`。
@@ -133,6 +154,53 @@ pub fn capture_image_with_stream(
 
     completion.wait().map_err(SCError::internal_error)
 }
+
+/// 基于 SCStream 的单帧抓取（macOS 12.3+），返回 `CMSampleBuffer`
+///
+/// 当系统低于 macOS 14 时，可用此函数替代 `SCScreenshotManager`。
+/// 返回 `CMSampleBuffer` 而不是 `CGImage`，可以从 `CMSampleBuffer` 中提取 `CVPixelBuffer`，
+/// 同时还能访问时间戳等元数据。
+///
+/// # Examples
+///
+/// ```no_run
+/// use screencapturekit::screenshot_manager::capture_sample_buffer_with_stream;
+/// use screencapturekit::stream::{content_filter::SCContentFilter, configuration::SCStreamConfiguration};
+///
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// # let filter = SCContentFilter::builder().display(&display).exclude_windows(&[]).build();
+/// # let config = SCStreamConfiguration::new().with_width(1920).with_height(1080);
+/// let sample_buffer = capture_sample_buffer_with_stream(&filter, &config)?;
+///
+/// // 从 CMSampleBuffer 中提取 CVPixelBuffer
+/// if let Some(pixel_buffer) = sample_buffer.image_buffer() {
+///     println!("Pixel buffer: {}x{}", pixel_buffer.width(), pixel_buffer.height());
+/// }
+///
+/// // 访问时间戳等元数据
+/// let pts = sample_buffer.presentation_timestamp();
+/// println!("Presentation time: {} / {}", pts.value, pts.timescale);
+/// # Ok(())
+/// # }
+/// ```
+pub fn capture_sample_buffer_with_stream(
+    content_filter: &SCContentFilter,
+    configuration: &SCStreamConfiguration,
+) -> Result<crate::cm::CMSampleBuffer, SCError> {
+    let (completion, context) = SyncCompletion::<crate::cm::CMSampleBuffer>::new();
+
+    unsafe {
+        crate::ffi::sc_stream_capture_sample_buffer(
+            content_filter.as_ptr(),
+            configuration.as_ptr(),
+            sample_buffer_callback,
+            context,
+        );
+    }
+
+    completion.wait().map_err(SCError::internal_error)
+}
+
 
 #[cfg(feature = "macos_26_0")]
 extern "C" fn screenshot_output_callback(

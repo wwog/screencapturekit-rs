@@ -1,15 +1,16 @@
 use screencapturekit::{
     prelude::{CGDisplay, PixelFormat, SCContentFilter, SCShareableContent, SCStreamConfiguration},
-    screenshot_manager::{capture_image_with_stream, CGImage},
+    screenshot_manager::capture_sample_buffer_with_stream,
 };
 use std::thread;
 use std::time::Instant;
 
-/// 基于 SCStream 的单帧截图示例（支持 macOS 12.3+）
+/// 基于 SCStream 的单帧截图示例（支持 macOS 12.3+），返回 CMSampleBuffer
 ///
 /// - 使用 content filter 锁定指定 display
 /// - 使用 stream configuration 指定输出分辨率（优先选用 display 的物理像素）
-/// - 调用 `capture_image_with_stream` 返回 CGImage 并保存 PNG
+/// - 调用 `capture_sample_buffer_with_stream` 返回 CMSampleBuffer
+/// - 可以从 CMSampleBuffer 中提取 CVPixelBuffer 和访问时间戳等元数据
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let start_time = Instant::now();
     let content = SCShareableContent::get()?;
@@ -45,17 +46,41 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     .with_pixel_format(PixelFormat::BGRA)
                     .with_shows_cursor(true);
 
-                let image: CGImage = capture_image_with_stream(&filter, &config)?;
-                let path = format!("stream_capture_display_{}.png", display.display_id());
-                // image.save_png(&path)?;
-                let data = image.rgba_data();
+                let sample_buffer = capture_sample_buffer_with_stream(&filter, &config)?;
+
+                // 从 CMSampleBuffer 中提取 CVPixelBuffer
+                if let Some(pixel_buffer) = sample_buffer.image_buffer() {
+                    println!(
+                        "Captured display {} at {}x{} -> Pixel buffer: {}x{}",
+                        display.display_id(),
+                        width,
+                        height,
+                        pixel_buffer.width(),
+                        pixel_buffer.height()
+                    );
+                } else {
+                    println!(
+                        "Captured display {} at {}x{} -> No pixel buffer",
+                        display.display_id(),
+                        width,
+                        height
+                    );
+                }
+
+                // 访问时间戳等元数据
+                let pts = sample_buffer.presentation_timestamp();
                 println!(
-                    "Captured display {} at {}x{} -> {}",
+                    "Display {} presentation time: {} / {}",
                     display.display_id(),
-                    width,
-                    height,
-                    path
+                    pts.value,
+                    pts.timescale
                 );
+
+                // 检查帧状态
+                if let Some(status) = sample_buffer.frame_status() {
+                    println!("Display {} frame status: {:?}", display.display_id(), status);
+                }
+
                 Ok(())
             },
         ));
