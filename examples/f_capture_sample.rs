@@ -1,4 +1,5 @@
 use screencapturekit::{
+    output::{CVImageBufferLockExt, PixelBufferLockFlags},
     prelude::{CGDisplay, PixelFormat, SCContentFilter, SCShareableContent, SCStreamConfiguration},
     screenshot_manager::capture_sample_buffer_with_stream,
 };
@@ -50,14 +51,42 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
                 // 从 CMSampleBuffer 中提取 CVPixelBuffer
                 if let Some(pixel_buffer) = sample_buffer.image_buffer() {
+                    let buffer_width = pixel_buffer.width();
+                    let buffer_height = pixel_buffer.height();
+                    
                     println!(
                         "Captured display {} at {}x{} -> Pixel buffer: {}x{}",
                         display.display_id(),
                         width,
                         height,
-                        pixel_buffer.width(),
-                        pixel_buffer.height()
+                        buffer_width,
+                        buffer_height
                     );
+
+                    // 锁定 pixel buffer 并读取数据
+                    let guard = pixel_buffer.lock(PixelBufferLockFlags::ReadOnly)?;
+                    let pixel_data = guard.as_slice();
+                    
+                    // 将 BGRA 转换为 RGBA（PNG 使用 RGBA）
+                    let mut rgba_data = Vec::with_capacity(pixel_data.len());
+                    for chunk in pixel_data.chunks_exact(4) {
+                        rgba_data.push(chunk[2]); // R (from B)
+                        rgba_data.push(chunk[1]); // G
+                        rgba_data.push(chunk[0]); // B (from R)
+                        rgba_data.push(chunk[3]); // A
+                    }
+                    
+                    // 保存为 PNG
+                    let path = format!("sample_capture_display_{}.png", display.display_id());
+                    let file = std::fs::File::create(&path)?;
+                    let buf_writer = std::io::BufWriter::new(file);
+                    let mut encoder = png::Encoder::new(buf_writer, buffer_width as u32, buffer_height as u32);
+                    encoder.set_color(png::ColorType::Rgba);
+                    encoder.set_depth(png::BitDepth::Eight);
+                    let mut writer = encoder.write_header()?;
+                    writer.write_image_data(&rgba_data)?;
+                    
+                    println!("Saved image to: {}", path);
                 } else {
                     println!(
                         "Captured display {} at {}x{} -> No pixel buffer",
