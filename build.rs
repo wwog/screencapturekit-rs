@@ -11,6 +11,12 @@ fn main() {
 
     println!("cargo:rerun-if-changed={swift_dir}");
 
+    let feature_open_15 = env::var("CARGO_FEATURE_MACOS_15_0").is_ok();
+    let feature_open_26 = env::var("CARGO_FEATURE_MACOS_26_0").is_ok();
+
+    println!("feature_open_15: {}", feature_open_15);
+    println!("feature_open_26: {}", feature_open_26);
+
     // Run swiftlint if available (non-strict mode, don't fail build)
     if let Ok(output) = Command::new("swiftlint")
         .args(["lint"])
@@ -25,17 +31,27 @@ fn main() {
         }
     }
 
+    let mut args = vec![
+        "build",
+        "-c",
+        "release",
+        "--package-path",
+        swift_dir,
+        "--scratch-path",
+        &swift_build_dir,
+    ];
+
+    if feature_open_15 {
+        args.push("--features");
+        args.push("macos_15_0");
+    }
+    if feature_open_26 {
+        args.push("--features");
+        args.push("macos_26_0");
+    }
     // Build Swift package with build directory in OUT_DIR
     let output = Command::new("swift")
-        .args([
-            "build",
-            "-c",
-            "release",
-            "--package-path",
-            swift_dir,
-            "--scratch-path",
-            &swift_build_dir,
-        ])
+        .args(&args)
         .output()
         .expect("Failed to build Swift bridge");
 
