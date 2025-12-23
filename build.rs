@@ -30,16 +30,19 @@ fn main() {
     
     // Detect target architecture for cross-compilation support
     let target = env::var("TARGET").unwrap_or_default();
-    let swift_arch = if target.contains("x86_64") {
-        Some("x86_64")
+    let host = env::var("HOST").unwrap_or_default();
+    let use_rosetta = target.contains("x86_64") && (host.contains("aarch64") || host.contains("arm64"));
+    
+    let swift_target_triple = if target.contains("x86_64") {
+        Some("x86_64-apple-macosx")
     } else if target.contains("aarch64") || target.contains("arm64") {
-        Some("arm64")
+        Some("arm64-apple-macosx")
     } else {
         None
     };
     
-    if let Some(arch) = swift_arch {
-        println!("cargo:warning=Building Swift bridge for architecture: {arch} (target: {target})");
+    if let Some(triple) = swift_target_triple {
+        println!("cargo:warning=Building Swift bridge for target: {triple} (Rust target: {target})");
     }
     
     let mut args = vec![
@@ -52,17 +55,11 @@ fn main() {
         &swift_build_dir,
     ];
 
-    // Add architecture flags for cross-compilation
-    if let Some(arch) = swift_arch {
-        args.push("-Xswiftc");
-        args.push("-arch");
-        args.push("-Xswiftc");
-        args.push(arch);
-        args.push("-Xcc");
-        args.push("-arch");
-        args.push("-Xcc");
-        args.push(arch);
-    }
+    // Add target triple for cross-compilation
+    // Note: When using arch -x86_64, Swift automatically handles the architecture
+    // so we don't need to add -target flags. For native builds, we also skip
+    // -target flags as Swift Package Manager handles this automatically.
+    // The architecture is determined by the build environment.
 
     if feature_open_15 {
         args.push("--features");
@@ -74,10 +71,26 @@ fn main() {
     }
 
     // Build Swift package with build directory in OUT_DIR
-    let output = Command::new("swift")
-        .args(args)
-        .output()
-        .expect("Failed to build Swift bridge");
+    // For cross-compilation from ARM to x86_64, use arch -x86_64
+    
+    println!("cargo:warning=Building Swift bridge (target: {target}, host: {host})");
+    
+    let output = if use_rosetta {
+        println!("cargo:warning=Cross-compiling to x86_64 on ARM Mac, using arch -x86_64");
+        // Use arch -x86_64 to run swift in x86_64 mode via Rosetta 2
+        // Format: arch -x86_64 swift build ...
+        Command::new("arch")
+            .arg("-x86_64")
+            .arg("swift")
+            .args(&args)
+            .output()
+            .expect("Failed to build Swift bridge with arch -x86_64")
+    } else {
+        Command::new("swift")
+            .args(&args)
+            .output()
+            .expect("Failed to build Swift bridge")
+    };
 
     // Swift build outputs warnings to stderr even on success, check exit code only
     if !output.status.success() {
