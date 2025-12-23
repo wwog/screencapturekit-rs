@@ -11,12 +11,6 @@ fn main() {
 
     println!("cargo:rerun-if-changed={swift_dir}");
 
-    let feature_open_15 = env::var("CARGO_FEATURE_MACOS_15_0").is_ok();
-    let feature_open_26 = env::var("CARGO_FEATURE_MACOS_26_0").is_ok();
-
-    println!("feature_open_15: {}", feature_open_15);
-    println!("feature_open_26: {}", feature_open_26);
-
     // Run swiftlint if available (non-strict mode, don't fail build)
     if let Ok(output) = Command::new("swiftlint")
         .args(["lint"])
@@ -31,6 +25,23 @@ fn main() {
         }
     }
 
+    let feature_open_15 = env::var("CARGO_FEATURE_MACOS_15_0").is_ok();
+    let feature_open_26 = env::var("CARGO_FEATURE_MACOS_26_0").is_ok();
+    
+    // Detect target architecture for cross-compilation support
+    let target = env::var("TARGET").unwrap_or_default();
+    let swift_arch = if target.contains("x86_64") {
+        Some("x86_64")
+    } else if target.contains("aarch64") || target.contains("arm64") {
+        Some("arm64")
+    } else {
+        None
+    };
+    
+    if let Some(arch) = swift_arch {
+        println!("cargo:warning=Building Swift bridge for architecture: {arch} (target: {target})");
+    }
+    
     let mut args = vec![
         "build",
         "-c",
@@ -41,6 +52,18 @@ fn main() {
         &swift_build_dir,
     ];
 
+    // Add architecture flags for cross-compilation
+    if let Some(arch) = swift_arch {
+        args.push("-Xswiftc");
+        args.push("-arch");
+        args.push("-Xswiftc");
+        args.push(arch);
+        args.push("-Xcc");
+        args.push("-arch");
+        args.push("-Xcc");
+        args.push(arch);
+    }
+
     if feature_open_15 {
         args.push("--features");
         args.push("macos_15_0");
@@ -49,9 +72,10 @@ fn main() {
         args.push("--features");
         args.push("macos_26_0");
     }
+
     // Build Swift package with build directory in OUT_DIR
     let output = Command::new("swift")
-        .args(&args)
+        .args(args)
         .output()
         .expect("Failed to build Swift bridge");
 
@@ -82,5 +106,44 @@ fn main() {
     println!("cargo:rustc-link-lib=framework=IOSurface");
 
     // Add rpath for Swift runtime libraries
+    // For x86_64, use x86_64 subdirectory; for arm64, use arm64 or default
+    let swift_runtime_arch = if target.contains("x86_64") {
+        "x86_64"
+    } else {
+        "arm64"
+    };
+    
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    
+    // Add architecture-specific Swift runtime path
+    let swift_arch_path = format!("/usr/lib/swift/{swift_runtime_arch}");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{swift_arch_path}");
+
+    // Add rpath for Xcode Swift runtime (needed for Swift Concurrency)
+    if let Ok(output) = Command::new("xcode-select").arg("-p").output() {
+        if output.status.success() {
+            let xcode_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            
+            // Add architecture-specific paths
+            let swift_lib_path_arch = format!(
+                "{xcode_path}/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.5/macosx/{swift_runtime_arch}"
+            );
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{swift_lib_path_arch}");
+            
+            let swift_lib_path = format!(
+                "{xcode_path}/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.5/macosx"
+            );
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{swift_lib_path}");
+            
+            // Also add the newer swift path
+            let swift_lib_path_new_arch = format!(
+                "{xcode_path}/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx/{swift_runtime_arch}"
+            );
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{swift_lib_path_new_arch}");
+            
+            let swift_lib_path_new =
+                format!("{xcode_path}/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx");
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{swift_lib_path_new}");
+        }
+    }
 }
